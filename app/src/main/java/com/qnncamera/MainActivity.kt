@@ -2,7 +2,6 @@ package com.qnncamera
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
@@ -12,6 +11,10 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import org.tensorflow.lite.Interpreter
+import java.io.FileInputStream
+import java.nio.MappedByteBuffer
+import java.nio.channels.FileChannel
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -21,20 +24,11 @@ class MainActivity : AppCompatActivity() {
         private const val TAG = "QNN_CAMERA"
         private const val REQUEST_CODE_PERMISSIONS = 10
         private val REQUIRED_PERMISSIONS = arrayOf(Manifest.permission.CAMERA)
-        
-        init {
-            System.loadLibrary("qnncamera")
-        }
     }
     
     private lateinit var cameraExecutor: ExecutorService
     private var previewView: PreviewView? = null
-    
-    // Native methods - JNI bridge to QNN
-    external fun getQnnStatus(): String
-    external fun initQnn(modelPath: String): Int
-    external fun processFrame(bitmap: Bitmap): Bitmap
-    external fun releaseQnn()
+    private var tfliteInterpreter: Interpreter? = null
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -44,11 +38,9 @@ class MainActivity : AppCompatActivity() {
         
         cameraExecutor = Executors.newSingleThreadExecutor()
         
-        // Set QNN environment variables
+        // Setup QNN environment and load model
         setupQnnEnvironment()
-        
-        // Check QNN status
-        Log.i(TAG, "QNN Status: " + getQnnStatus())
+        loadModel()
         
         if (allPermissionsGranted()) {
             startCamera()
@@ -57,15 +49,31 @@ class MainActivity : AppCompatActivity() {
         }
     }
     
+    private fun loadModel() {
+        try {
+            val modelBuffer = loadModelFile("midas.tflite")
+            tfliteInterpreter = Interpreter(modelBuffer)
+            Log.i(TAG, "MiDaS model loaded successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load MiDaS model", e)
+        }
+    }
+    
+    private fun loadModelFile(filename: String): MappedByteBuffer {
+        val fd = assets.openFd(filename)
+        val input = FileInputStream(fd.fileDescriptor)
+        val channel = input.channel
+        return channel.map(FileChannel.MapMode.READ_ONLY, fd.startOffset, fd.declaredLength)
+    }
+    
     private fun setupQnnEnvironment() {
         val nativeLibDir = applicationInfo.nativeLibraryDir
         try {
             android.system.Os.setenv("ADSP_LIBRARY_PATH", 
                 "$nativeLibDir:/system/lib64:/vendor/lib64/dsp", true)
-            android.system.Os.setenv("LD_LIBRARY_PATH", nativeLibDir, true)
             Log.i(TAG, "QNN environment configured: $nativeLibDir")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to set QNN env vars", e)
+            Log.w(TAG, "Could not set QNN env vars (normal on some devices)", e)
         }
     }
     
@@ -113,7 +121,7 @@ class MainActivity : AppCompatActivity() {
     
     override fun onDestroy() {
         super.onDestroy()
-        releaseQnn()
+        tfliteInterpreter?.close()
         cameraExecutor.shutdown()
     }
 }
