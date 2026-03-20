@@ -497,23 +497,53 @@ class MainActivity : AppCompatActivity() {
     @androidx.camera.core.ExperimentalGetImage
     private fun imageProxyToBitmap(imageProxy: ImageProxy): Bitmap? {
         val image = imageProxy.image ?: return null
-        val yBuffer = image.planes[0].buffer
-        val uBuffer = image.planes[1].buffer
-        val vBuffer = image.planes[2].buffer
         
-        val ySize = yBuffer.remaining()
-        val uSize = uBuffer.remaining()
-        val vSize = vBuffer.remaining()
+        val width = image.width
+        val height = image.height
         
-        val nv21 = ByteArray(ySize + uSize + vSize)
-        yBuffer.get(nv21, 0, ySize)
-        vBuffer.get(nv21, ySize, vSize)
-        uBuffer.get(nv21, ySize + vSize, uSize)
+        val yPlane = image.planes[0]
+        val uPlane = image.planes[1]
+        val vPlane = image.planes[2]
         
-        val yuvImage = android.graphics.YuvImage(nv21, android.graphics.ImageFormat.NV21, 
-            image.width, image.height, null)
+        val yBuffer = yPlane.buffer
+        val uBuffer = uPlane.buffer
+        val vBuffer = vPlane.buffer
+        
+        val yRowStride = yPlane.rowStride
+        val uvRowStride = uPlane.rowStride
+        val uvPixelStride = uPlane.pixelStride
+        
+        // NV21 format: Y plane followed by interleaved VU
+        val nv21 = ByteArray(width * height * 3 / 2)
+        
+        // Copy Y plane with correct stride handling
+        var pos = 0
+        for (row in 0 until height) {
+            yBuffer.position(row * yRowStride)
+            yBuffer.get(nv21, pos, width)
+            pos += width
+        }
+        
+        // Copy UV planes (interleaved as VU for NV21)
+        val uvHeight = height / 2
+        val uvWidth = width / 2
+        
+        for (row in 0 until uvHeight) {
+            for (col in 0 until uvWidth) {
+                val vIndex = row * uvRowStride + col * uvPixelStride
+                val uIndex = row * uvRowStride + col * uvPixelStride
+                
+                vBuffer.position(vIndex)
+                nv21[pos++] = vBuffer.get()
+                
+                uBuffer.position(uIndex)
+                nv21[pos++] = uBuffer.get()
+            }
+        }
+        
+        val yuvImage = android.graphics.YuvImage(nv21, android.graphics.ImageFormat.NV21, width, height, null)
         val out = java.io.ByteArrayOutputStream()
-        yuvImage.compressToJpeg(android.graphics.Rect(0, 0, image.width, image.height), 80, out)
+        yuvImage.compressToJpeg(android.graphics.Rect(0, 0, width, height), 90, out)
         val imageBytes = out.toByteArray()
         return BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
     }
