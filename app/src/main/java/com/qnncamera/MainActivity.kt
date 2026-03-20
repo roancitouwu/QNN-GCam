@@ -24,6 +24,8 @@ import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import org.tensorflow.lite.Interpreter
+import org.tensorflow.lite.gpu.GpuDelegate
+import org.tensorflow.lite.HexagonDelegate
 import org.tensorflow.lite.nnapi.NnApiDelegate
 import java.io.File
 import java.io.FileInputStream
@@ -54,6 +56,9 @@ class MainActivity : AppCompatActivity() {
     private var depthBlurEnabled = false
     private var statusText: TextView? = null
     private var nnApiDelegate: NnApiDelegate? = null
+    private var hexagonDelegate: HexagonDelegate? = null
+    private var gpuDelegate: GpuDelegate? = null
+    private var acceleratorType = "CPU"
     private var depthOverlay: ImageView? = null
     private var lastDepthTime = 0L
     
@@ -202,19 +207,54 @@ class MainActivity : AppCompatActivity() {
     private fun loadModel() {
         try {
             val modelBuffer = loadModelFile("midas.tflite")
+            val options = Interpreter.Options()
             
-            // Use NNAPI delegate for Hexagon DSP acceleration
+            // Try Hexagon DSP first (fastest for quantized models)
             try {
-                nnApiDelegate = NnApiDelegate()
-                val options = Interpreter.Options().addDelegate(nnApiDelegate)
+                hexagonDelegate = HexagonDelegate(this)
+                options.addDelegate(hexagonDelegate)
                 tfliteInterpreter = Interpreter(modelBuffer, options)
-                Log.i(TAG, "MiDaS model loaded with NNAPI (Hexagon DSP)")
-                runOnUiThread { statusText?.text = "MiDaS ready (NNAPI/DSP)" }
+                acceleratorType = "Hexagon DSP"
+                Log.i(TAG, "MiDaS loaded with Hexagon DSP")
             } catch (e: Exception) {
-                Log.w(TAG, "NNAPI delegate failed, using CPU", e)
-                tfliteInterpreter = Interpreter(modelBuffer)
-                runOnUiThread { statusText?.text = "MiDaS ready (CPU)" }
+                Log.w(TAG, "Hexagon failed: ${e.message}")
+                hexagonDelegate?.close()
+                hexagonDelegate = null
+                
+                // Try GPU delegate
+                try {
+                    gpuDelegate = GpuDelegate()
+                    options.addDelegate(gpuDelegate)
+                    tfliteInterpreter = Interpreter(modelBuffer, options)
+                    acceleratorType = "GPU"
+                    Log.i(TAG, "MiDaS loaded with GPU")
+                } catch (e2: Exception) {
+                    Log.w(TAG, "GPU failed: ${e2.message}")
+                    gpuDelegate?.close()
+                    gpuDelegate = null
+                    
+                    // Try NNAPI delegate
+                    try {
+                        nnApiDelegate = NnApiDelegate()
+                        options.addDelegate(nnApiDelegate)
+                        tfliteInterpreter = Interpreter(modelBuffer, options)
+                        acceleratorType = "NNAPI"
+                        Log.i(TAG, "MiDaS loaded with NNAPI")
+                    } catch (e3: Exception) {
+                        Log.w(TAG, "NNAPI failed: ${e3.message}")
+                        nnApiDelegate?.close()
+                        nnApiDelegate = null
+                        
+                        // Fallback to CPU with multiple threads
+                        options.setNumThreads(4)
+                        tfliteInterpreter = Interpreter(modelBuffer, options)
+                        acceleratorType = "CPU (4 threads)"
+                        Log.i(TAG, "MiDaS loaded with CPU")
+                    }
+                }
             }
+            
+            runOnUiThread { statusText?.text = "MiDaS ready ($acceleratorType)" }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load MiDaS model", e)
             runOnUiThread { statusText?.text = "Model load failed: ${e.message}" }
@@ -436,7 +476,7 @@ class MainActivity : AppCompatActivity() {
             
             runOnUiThread {
                 depthOverlay?.setImageBitmap(bokehBitmap)
-                statusText?.text = "Bokeh: ${inferenceTime}ms"
+                statusText?.text = "Bokeh: ${inferenceTime}ms ($acceleratorType)"
             }
         } catch (e: Exception) {
             Log.e(TAG, "Frame depth processing failed", e)
@@ -596,6 +636,8 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         tfliteInterpreter?.close()
+        hexagonDelegate?.close()
+        gpuDelegate?.close()
         nnApiDelegate?.close()
         blurScript?.destroy()
         renderScript?.destroy()
