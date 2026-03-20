@@ -75,10 +75,10 @@ class MainActivity : AppCompatActivity() {
             FrameLayout.LayoutParams.MATCH_PARENT
         ))
         
-        // Depth overlay (semi-transparent on top of preview)
+        // Bokeh overlay (replaces preview when active)
         depthOverlay = ImageView(this).apply {
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            alpha = 0.5f
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            alpha = 1.0f
             visibility = View.GONE
         }
         rootLayout.addView(depthOverlay, FrameLayout.LayoutParams(
@@ -438,50 +438,58 @@ class MainActivity : AppCompatActivity() {
         val rs = renderScript ?: return original
         val blur = blurScript ?: return original
         
+        val width = original.width
+        val height = original.height
+        
         // Create blurred version using RenderScript (GPU accelerated)
         val blurredBitmap = original.copy(Bitmap.Config.ARGB_8888, true)
         val inputAlloc = Allocation.createFromBitmap(rs, blurredBitmap)
         val outputAlloc = Allocation.createFromBitmap(rs, blurredBitmap)
         
-        // Max blur radius is 25
-        blur.setRadius(20f)
+        blur.setRadius(25f) // Max blur
         blur.setInput(inputAlloc)
         blur.forEach(outputAlloc)
         outputAlloc.copyTo(blurredBitmap)
         
-        // Composite: keep sharp foreground, blur background based on depth
-        val result = original.copy(Bitmap.Config.ARGB_8888, true)
-        val width = original.width
-        val height = original.height
-        
-        // Normalize depth
-        val minDepth = depthMap.minOrNull() ?: 0f
-        val maxDepth = depthMap.maxOrNull() ?: 1f
-        val range = if (maxDepth - minDepth > 0) maxDepth - minDepth else 1f
-        
-        // Composite based on depth - foreground sharp, background blurred
-        for (y in 0 until height) {
-            for (x in 0 until width) {
-                val dx = (x * MODEL_INPUT_SIZE / width).coerceIn(0, MODEL_INPUT_SIZE - 1)
-                val dy = (y * MODEL_INPUT_SIZE / height).coerceIn(0, MODEL_INPUT_SIZE - 1)
-                val depth = (depthMap[dy * MODEL_INPUT_SIZE + dx] - minDepth) / range
-                
-                // depth > 0.5 = foreground (sharp), depth < 0.5 = background (blur)
-                val origPixel = original.getPixel(x, y)
-                val blurPixel = blurredBitmap.getPixel(x, y)
-                
-                // Smooth blend based on depth
-                val blendFactor = (1f - depth).coerceIn(0f, 1f)
-                val r = ((Color.red(origPixel) * (1 - blendFactor) + Color.red(blurPixel) * blendFactor)).toInt()
-                val g = ((Color.green(origPixel) * (1 - blendFactor) + Color.green(blurPixel) * blendFactor)).toInt()
-                val b = ((Color.blue(origPixel) * (1 - blendFactor) + Color.blue(blurPixel) * blendFactor)).toInt()
-                
-                result.setPixel(x, y, Color.rgb(r, g, b))
-            }
-        }
-        
         inputAlloc.destroy()
         outputAlloc.destroy()
+        
+        // Normalize depth map
+        val minDepth = depthMap.minOrNull() ?: 0f
+        val maxDepth = depthMap.maxOrNull() ?: 1f
+        val range = if (maxDepth - minDepth > 0.001f) maxDepth - minDepth else 1f
+        
+        // Use int arrays for faster pixel manipulation
+        val origPixels = IntArray(width * height)
+        val blurPixels = IntArray(width * height)
+        val resultPixels = IntArray(width * height)
+        
+        original.getPixels(origPixels, 0, width, 0, 0, width, height)
+        blurredBitmap.getPixels(blurPixels, 0, width, 0, 0, width, height)
+        
+        // Composite based on depth
+        for (i in origPixels.indices) {
+            val x = i % width
+            val y = i / width
+            val dx = (x * MODEL_INPUT_SIZE / width).coerceIn(0, MODEL_INPUT_SIZE - 1)
+            val dy = (y * MODEL_INPUT_SIZE / height).coerceIn(0, MODEL_INPUT_SIZE - 1)
+            val depthVal = (depthMap[dy * MODEL_INPUT_SIZE + dx] - minDepth) / range
+            
+            // High depth = near (sharp), low depth = far (blur)
+            val blendFactor = (1f - depthVal).coerceIn(0f, 1f)
+            
+            val origPx = origPixels[i]
+            val blurPx = blurPixels[i]
+            
+            val r = ((Color.red(origPx) * (1 - blendFactor) + Color.red(blurPx) * blendFactor)).toInt()
+            val g = ((Color.green(origPx) * (1 - blendFactor) + Color.green(blurPx) * blendFactor)).toInt()
+            val b = ((Color.blue(origPx) * (1 - blendFactor) + Color.blue(blurPx) * blendFactor)).toInt()
+            
+            resultPixels[i] = Color.rgb(r, g, b)
+        }
+        
+        val result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        result.setPixels(resultPixels, 0, width, 0, 0, width, height)
         
         return result
     }
