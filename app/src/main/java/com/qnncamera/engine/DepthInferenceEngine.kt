@@ -3,11 +3,11 @@ package com.qnncamera.engine
 import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
-import com.google.android.gms.tasks.Task
 import com.google.android.gms.tflite.java.TfLite
+import com.google.android.gms.tflite.gpu.GpuDelegate
+import com.google.android.gms.tflite.gpu.support.TfLiteGpu
 import org.tensorflow.lite.InterpreterApi
 import org.tensorflow.lite.InterpreterApi.Options.TfLiteRuntime
-import org.tensorflow.lite.gpu.GpuDelegateFactory
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -26,6 +26,7 @@ class DepthInferenceEngine(private val context: Context) {
     }
     
     private var interpreter: InterpreterApi? = null
+    private var gpuDelegate: GpuDelegate? = null
     private var isInitialized = false
     private var acceleratorType = "Initializing"
     
@@ -44,46 +45,52 @@ class DepthInferenceEngine(private val context: Context) {
      * This provides automatic updates and better hardware support
      */
     fun initialize(callback: InitCallback) {
-        // Initialize TFLite in Play Services
-        TfLite.initialize(context).addOnSuccessListener {
-            Log.i(TAG, "TFLite Play Services initialized")
-            loadModel(callback)
+        // Initialize TFLite and GPU in Play Services
+        TfLite.initialize(context).continueWithTask { task ->
+            TfLiteGpu.isGpuDelegateAvailable(context)
+        }.addOnSuccessListener { gpuAvailable ->
+            Log.i(TAG, "TFLite Play Services initialized, GPU available: $gpuAvailable")
+            loadModel(gpuAvailable, callback)
         }.addOnFailureListener { e ->
             Log.e(TAG, "TFLite Play Services init failed: ${e.message}")
-            // Fallback to bundled TFLite
             loadModelBundled(callback)
         }
     }
     
-    private fun loadModel(callback: InitCallback) {
+    private fun loadModel(gpuAvailable: Boolean, callback: InitCallback) {
         try {
             val modelBuffer = loadModelFile("midas.tflite")
-            
-            // Try GPU delegate first
             val options = InterpreterApi.Options()
                 .setRuntime(TfLiteRuntime.FROM_SYSTEM_ONLY)
+                .setNumThreads(4)
             
-            try {
-                val gpuOptions = GpuDelegateFactory.Options()
-                options.addDelegateFactory(GpuDelegateFactory(gpuOptions))
-                interpreter = InterpreterApi.create(modelBuffer, options)
-                acceleratorType = "GPU (Play Services)"
-                isInitialized = true
-                Log.i(TAG, "Model loaded with GPU delegate")
-                callback.onInitialized(acceleratorType)
-            } catch (e: Exception) {
-                Log.w(TAG, "GPU delegate failed: ${e.message}")
-                // Fallback to CPU
-                options.setNumThreads(4)
-                interpreter = InterpreterApi.create(modelBuffer, options)
-                acceleratorType = "CPU (Play Services)"
-                isInitialized = true
-                Log.i(TAG, "Model loaded with CPU")
-                callback.onInitialized(acceleratorType)
+            if (gpuAvailable) {
+                try {
+                    gpuDelegate = GpuDelegate.create(context)
+                    options.addDelegate(gpuDelegate!!)
+                    interpreter = InterpreterApi.create(modelBuffer, options)
+                    acceleratorType = "GPU (Play Services)"
+                    isInitialized = true
+                    Log.i(TAG, "Model loaded with GPU delegate")
+                    callback.onInitialized(acceleratorType)
+                    return
+                } catch (e: Exception) {
+                    Log.w(TAG, "GPU delegate failed: ${e.message}")
+                    gpuDelegate?.close()
+                    gpuDelegate = null
+                }
             }
+            
+            // CPU fallback with XNNPACK (auto-enabled)
+            interpreter = InterpreterApi.create(modelBuffer, options)
+            acceleratorType = "CPU XNNPACK (Play Services)"
+            isInitialized = true
+            Log.i(TAG, "Model loaded with CPU XNNPACK")
+            callback.onInitialized(acceleratorType)
+            
         } catch (e: Exception) {
             Log.e(TAG, "Model load failed: ${e.message}")
-            callback.onError("Model load failed: ${e.message}")
+            loadModelBundled(callback)
         }
     }
     
@@ -91,17 +98,17 @@ class DepthInferenceEngine(private val context: Context) {
         try {
             val modelBuffer = loadModelFile("midas.tflite")
             val options = InterpreterApi.Options()
-                .setRuntime(TfLiteRuntime.FROM_APPLICATION_ONLY)
+                .setRuntime(TfLiteRuntime.PREFER_SYSTEM_OVER_APPLICATION)
                 .setNumThreads(4)
             
             interpreter = InterpreterApi.create(modelBuffer, options)
-            acceleratorType = "CPU (Bundled)"
+            acceleratorType = "CPU (Fallback)"
             isInitialized = true
-            Log.i(TAG, "Model loaded with bundled runtime")
+            Log.i(TAG, "Model loaded with fallback runtime")
             callback.onInitialized(acceleratorType)
         } catch (e: Exception) {
             Log.e(TAG, "Bundled model load failed: ${e.message}")
-            callback.onError("Bundled model load failed: ${e.message}")
+            callback.onError("Model load failed: ${e.message}")
         }
     }
     
@@ -177,7 +184,9 @@ class DepthInferenceEngine(private val context: Context) {
     
     fun close() {
         interpreter?.close()
+        gpuDelegate?.close()
         interpreter = null
+        gpuDelegate = null
         isInitialized = false
     }
 }
