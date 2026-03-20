@@ -11,7 +11,7 @@
         android:theme="@style/Theme.AppCompat.NoActionBar">
         <uses-native-library android:name="libcdsprpc.so" android:required="false"/>
         <activity
-            android:name=".MainActivity"
+            android:name=".MainActivityNew"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
