@@ -384,14 +384,15 @@ class MainActivity : AppCompatActivity() {
                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
                 .build()
             
-            // Real-time depth analysis
+            // Real-time depth analysis - lower resolution for speed
             imageAnalyzer = ImageAnalysis.Builder()
-                .setTargetResolution(Size(640, 480))
+                .setTargetResolution(Size(320, 240))
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                 .build()
                 .also {
                     it.setAnalyzer(cameraExecutor) { imageProxy ->
-                        if (depthBlurEnabled && System.currentTimeMillis() - lastDepthTime > 100) {
+                        if (depthBlurEnabled && System.currentTimeMillis() - lastDepthTime > 50) {
                             processFrameForDepth(imageProxy)
                             lastDepthTime = System.currentTimeMillis()
                         }
@@ -415,7 +416,15 @@ class MainActivity : AppCompatActivity() {
     
     @androidx.camera.core.ExperimentalGetImage
     private fun processFrameForDepth(imageProxy: ImageProxy) {
-        val bitmap = imageProxyToBitmap(imageProxy) ?: return
+        var bitmap = imageProxyToBitmap(imageProxy) ?: return
+        
+        // Fix orientation based on camera rotation
+        val rotation = imageProxy.imageInfo.rotationDegrees
+        if (rotation != 0) {
+            val matrix = Matrix()
+            matrix.postRotate(rotation.toFloat())
+            bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+        }
         
         try {
             val startTime = System.currentTimeMillis()
@@ -427,7 +436,7 @@ class MainActivity : AppCompatActivity() {
             
             runOnUiThread {
                 depthOverlay?.setImageBitmap(bokehBitmap)
-                statusText?.text = "Bokeh: ${inferenceTime}ms (NNAPI+GPU)"
+                statusText?.text = "Bokeh: ${inferenceTime}ms"
             }
         } catch (e: Exception) {
             Log.e(TAG, "Frame depth processing failed", e)
