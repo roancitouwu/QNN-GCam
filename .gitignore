@@ -17,6 +17,8 @@ out/
 output/
 libs/
 obj/
+app/app/
+**/build/
 
 # Model files (large binaries)
 *.dlc
