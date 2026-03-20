@@ -1,5 +1,7 @@
 # Real-Time Bokeh Implementation Research
 
+**Status**: Active investigation - found vendor libs and configs
+
 ## Device Capabilities (Xiaomi/SD685)
 
 ### Camera Hardware
@@ -98,8 +100,67 @@ org.codeaurora.qcamera3.iso_exp_priority.exposure_time_range
    - Most complex but guaranteed to work
    - Can use OpenGL ES for real-time blur
 
+## Xiaomi Vendor Bokeh Libraries Found
+
+### Native Libraries (`/vendor/lib64/`)
+```
+libmiphone_preview_bokeh.so   - Real-time preview bokeh
+libmiphone_capture_bokeh.so   - Capture bokeh
+libanc_single_rt_bokeh.so     - Single camera real-time bokeh
+libanc_single_bokeh.so        - Single camera bokeh
+libmialgo_mc_bokeh_cdsp_skel.so - Bokeh on Hexagon CDSP
+com.xiaomi.plugin.mibokeh.so  - MI Bokeh plugin
+com.xiaomi.plugin.capbokeh.so - Capture bokeh plugin
+```
+
+### Function Signatures (from libmiphone_preview_bokeh.so)
+```cpp
+MIALGO_PreviewBokeh_Launch(void**, tag_LaunchParam&)
+MIALGO_PreviewBokeh_Proc(void**, tag_ProcParam&)
+MIALGO_PreviewBokeh_Destroy(void**)
+PreviewBokehEffect(stBokehPreview*, MialgoPoint, int, MialgoImg*, char*, char*, char*)
+PreviewInitWhenLaunch_BokehEffect(stBokehPreview*, int, int)
+PreviewDestoryWhenClose_BokehEffect(stBokehPreview*)
+```
+
+### Configuration Files
+```
+/vendor/etc/camera/preview_bokeh_params.json
+/vendor/etc/camera/dualcam_bokeh_params.json
+/vendor/etc/camera/xiaomi/dualbokehsnapshot.json
+/vendor/etc/camera/xiaomi/frontbokehsnapshot.json
+```
+
+### Debug Properties
+```
+persist.vendor.camera.mipreviewbokeh.inputdump
+```
+
+## Implementation Approach
+
+### Option 1: Direct JNI to Vendor Libs (Complex)
+- Create JNI wrapper for libmiphone_preview_bokeh.so
+- Need to reverse engineer struct definitions
+- Risk: May need SELinux policy changes
+
+### Option 2: Use Camera HAL Vendor Tags
+The device exposes Xiaomi vendor tags:
+```
+com.xiaomi.camera.supportedfeatures.bokehVendorID
+com.xiaomi.camera.supportedfeatures.bokehDepthBufferSize
+xiaomi.camera.bokehinfo.AvailableTargetFpsRanges
+```
+
+Try setting these via Camera2 API CaptureRequest.
+
+### Option 3: RenderScript/OpenCL Blur
+Since the vendor libs use OpenCL, we could:
+1. Get depth from MiDaS model (already working)
+2. Apply blur using RenderScript ScriptIntrinsicBlur
+3. Composite based on depth mask
+
 ## Next Steps
-1. Test Camera2 Extensions API availability
-2. Query supported extensions on each camera
-3. Implement EXTENSION_BOKEH if available
+1. Try Camera2 vendor tags for bokeh activation
+2. Test RenderScript blur approach
+3. If needed, create JNI wrapper for vendor libs
 4. Add video recording with locked exposure
