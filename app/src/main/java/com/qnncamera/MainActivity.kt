@@ -163,13 +163,18 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun takePhoto() {
-        val imageCapture = imageCapture ?: return
+        val imageCapture = imageCapture ?: run {
+            Toast.makeText(this, "Camera not ready", Toast.LENGTH_SHORT).show()
+            return
+        }
         
+        // Use app's cache directory (always writable)
         val photoFile = File(
-            getExternalFilesDir(Environment.DIRECTORY_PICTURES),
+            cacheDir,
             "QNN_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.jpg"
         )
         
+        Log.i(TAG, "Saving photo to: ${photoFile.absolutePath}")
         val outputOptions = ImageCapture.OutputFileOptions.Builder(photoFile).build()
         
         imageCapture.takePicture(
