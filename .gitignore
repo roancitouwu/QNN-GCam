@@ -1,0 +1,76 @@
+# Build outputs
+*.apk
+*.aar
+*.dex
+*.class
+*.so
+*.o
+
+# SDK downloads (too large for git)
+ndk/
+qairt/
+sdk/
+
+# Build directories
+build/
+out/
+output/
+libs/
+obj/
+
+# Model files (large binaries)
+*.dlc
+*.tflite
+*.onnx
+*.pb
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Temp
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Keystore (security)
+*.keystore
+*.jks
+!debug.keystore
+
+# DigitalOcean info (contains IP)
+droplet_info.json
+
+# gcam_base (14K+ files, clone separately)
+gcam_base/
+
+# QNN libs (download from Qualcomm)
+*.so
+
+# Gradle
+.gradle/
+gradle-8.9/
+gradle.zip
+
+# Local config
+local.properties
+gradle.properties.local
+
+# APKs (build artifacts)
+*.apk
+
+# VM info (contains sensitive data)
+VM_INFO.md
