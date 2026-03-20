@@ -38,10 +38,12 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:1.4.1")
     implementation("androidx.camera:camera-view:1.4.1")
     
-    // TensorFlow Lite with hardware acceleration
+    // LiteRT in Google Play Services (modern approach, replaces deprecated NNAPI)
+    implementation("com.google.android.gms:play-services-tflite-java:16.4.0")
+    implementation("com.google.android.gms:play-services-tflite-gpu:16.4.0")
+    
+    // TensorFlow Lite (bundled fallback)
     implementation("org.tensorflow:tensorflow-lite:2.16.1")
-    implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
-    implementation("org.tensorflow:tensorflow-lite-gpu-delegate-plugin:0.4.4")
-    implementation("org.tensorflow:tensorflow-lite-gpu-api:2.16.1")
     implementation("org.tensorflow:tensorflow-lite-gpu:2.16.1")
+    implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
 }
