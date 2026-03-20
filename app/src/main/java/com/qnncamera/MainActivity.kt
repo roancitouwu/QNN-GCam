@@ -43,9 +43,12 @@ class MainActivity : AppCompatActivity() {
     private var previewView: PreviewView? = null
     private var tfliteInterpreter: Interpreter? = null
     private var imageCapture: ImageCapture? = null
+    private var imageAnalyzer: ImageAnalysis? = null
     private var depthBlurEnabled = false
     private var statusText: TextView? = null
     private var nnApiDelegate: NnApiDelegate? = null
+    private var depthOverlay: ImageView? = null
+    private var lastDepthTime = 0L
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -57,6 +60,17 @@ class MainActivity : AppCompatActivity() {
         // Camera preview
         previewView = PreviewView(this)
         rootLayout.addView(previewView, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT
+        ))
+        
+        // Depth overlay (semi-transparent on top of preview)
+        depthOverlay = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            alpha = 0.5f
+            visibility = View.GONE
+        }
+        rootLayout.addView(depthOverlay, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
             FrameLayout.LayoutParams.MATCH_PARENT
         ))
@@ -75,7 +89,8 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener {
                 depthBlurEnabled = !depthBlurEnabled
                 text = if (depthBlurEnabled) "Depth: ON" else "Depth: OFF"
-                statusText?.text = if (depthBlurEnabled) "MiDaS depth active" else "Normal mode"
+                depthOverlay?.visibility = if (depthBlurEnabled) View.VISIBLE else View.GONE
+                statusText?.text = if (depthBlurEnabled) "MiDaS depth active - processing..." else "Normal mode"
             }
         }
         controlsLayout.addView(depthToggle, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
@@ -236,14 +251,15 @@ class MainActivity : AppCompatActivity() {
             }
         }
         
-        val outputBuffer = Array(1) { Array(MODEL_INPUT_SIZE) { FloatArray(MODEL_INPUT_SIZE) } }
+        // Output shape is [1, 256, 256, 1]
+        val outputBuffer = Array(1) { Array(MODEL_INPUT_SIZE) { Array(MODEL_INPUT_SIZE) { FloatArray(1) } } }
         tfliteInterpreter?.run(inputBuffer, outputBuffer)
         
         // Flatten output
         val depth = FloatArray(MODEL_INPUT_SIZE * MODEL_INPUT_SIZE)
         for (y in 0 until MODEL_INPUT_SIZE) {
             for (x in 0 until MODEL_INPUT_SIZE) {
-                depth[y * MODEL_INPUT_SIZE + x] = outputBuffer[0][y][x]
+                depth[y * MODEL_INPUT_SIZE + x] = outputBuffer[0][y][x][0]
             }
         }
         return depth
@@ -306,18 +322,98 @@ class MainActivity : AppCompatActivity() {
                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
                 .build()
             
+            // Real-time depth analysis
+            imageAnalyzer = ImageAnalysis.Builder()
+                .setTargetResolution(Size(640, 480))
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build()
+                .also {
+                    it.setAnalyzer(cameraExecutor) { imageProxy ->
+                        if (depthBlurEnabled && System.currentTimeMillis() - lastDepthTime > 100) {
+                            processFrameForDepth(imageProxy)
+                            lastDepthTime = System.currentTimeMillis()
+                        }
+                        imageProxy.close()
+                    }
+                }
+            
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
             
             try {
                 cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(this, cameraSelector, preview, imageCapture)
-                Log.i(TAG, "Camera started successfully")
+                cameraProvider.bindToLifecycle(this, cameraSelector, preview, imageCapture, imageAnalyzer)
+                Log.i(TAG, "Camera started successfully with depth analysis")
                 statusText?.text = statusText?.text.toString().replace("Initializing...", "Ready")
             } catch (e: Exception) {
                 Log.e(TAG, "Camera binding failed", e)
                 statusText?.text = "Camera error"
             }
         }, ContextCompat.getMainExecutor(this))
+    }
+    
+    @androidx.camera.core.ExperimentalGetImage
+    private fun processFrameForDepth(imageProxy: ImageProxy) {
+        val bitmap = imageProxyToBitmap(imageProxy) ?: return
+        
+        try {
+            val startTime = System.currentTimeMillis()
+            val depthMap = runDepthInference(bitmap)
+            val inferenceTime = System.currentTimeMillis() - startTime
+            
+            // Create depth visualization
+            val depthBitmap = createDepthVisualization(depthMap)
+            
+            runOnUiThread {
+                depthOverlay?.setImageBitmap(depthBitmap)
+                statusText?.text = "Depth: ${inferenceTime}ms (NNAPI)"
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Frame depth processing failed", e)
+        }
+    }
+    
+    @androidx.camera.core.ExperimentalGetImage
+    private fun imageProxyToBitmap(imageProxy: ImageProxy): Bitmap? {
+        val image = imageProxy.image ?: return null
+        val yBuffer = image.planes[0].buffer
+        val uBuffer = image.planes[1].buffer
+        val vBuffer = image.planes[2].buffer
+        
+        val ySize = yBuffer.remaining()
+        val uSize = uBuffer.remaining()
+        val vSize = vBuffer.remaining()
+        
+        val nv21 = ByteArray(ySize + uSize + vSize)
+        yBuffer.get(nv21, 0, ySize)
+        vBuffer.get(nv21, ySize, vSize)
+        uBuffer.get(nv21, ySize + vSize, uSize)
+        
+        val yuvImage = android.graphics.YuvImage(nv21, android.graphics.ImageFormat.NV21, 
+            image.width, image.height, null)
+        val out = java.io.ByteArrayOutputStream()
+        yuvImage.compressToJpeg(android.graphics.Rect(0, 0, image.width, image.height), 80, out)
+        val imageBytes = out.toByteArray()
+        return BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+    }
+    
+    private fun createDepthVisualization(depthMap: FloatArray): Bitmap {
+        val bitmap = Bitmap.createBitmap(MODEL_INPUT_SIZE, MODEL_INPUT_SIZE, Bitmap.Config.ARGB_8888)
+        
+        // Normalize depth
+        val minDepth = depthMap.minOrNull() ?: 0f
+        val maxDepth = depthMap.maxOrNull() ?: 1f
+        val range = if (maxDepth - minDepth > 0) maxDepth - minDepth else 1f
+        
+        for (y in 0 until MODEL_INPUT_SIZE) {
+            for (x in 0 until MODEL_INPUT_SIZE) {
+                val depth = (depthMap[y * MODEL_INPUT_SIZE + x] - minDepth) / range
+                // Color: near=red, far=blue
+                val r = (depth * 255).toInt().coerceIn(0, 255)
+                val b = ((1 - depth) * 255).toInt().coerceIn(0, 255)
+                bitmap.setPixel(x, y, Color.argb(200, r, 0, b))
+            }
+        }
+        return bitmap
     }
     
     override fun onRequestPermissionsResult(
