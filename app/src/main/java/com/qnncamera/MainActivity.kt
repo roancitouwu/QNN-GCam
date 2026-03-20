@@ -8,6 +8,10 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraExtensionCharacteristics
 import android.os.Build
 import android.os.Bundle
+import android.renderscript.Allocation
+import android.renderscript.Element
+import android.renderscript.RenderScript
+import android.renderscript.ScriptIntrinsicBlur
 import android.util.Log
 import android.util.Size
 import android.view.Gravity
@@ -52,6 +56,10 @@ class MainActivity : AppCompatActivity() {
     private var nnApiDelegate: NnApiDelegate? = null
     private var depthOverlay: ImageView? = null
     private var lastDepthTime = 0L
+    
+    // RenderScript for GPU blur
+    private var renderScript: RenderScript? = null
+    private var blurScript: ScriptIntrinsicBlur? = null
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -128,6 +136,10 @@ class MainActivity : AppCompatActivity() {
         setContentView(rootLayout)
         
         cameraExecutor = Executors.newSingleThreadExecutor()
+        
+        // Initialize RenderScript for GPU blur
+        renderScript = RenderScript.create(this)
+        blurScript = ScriptIntrinsicBlur.create(renderScript, Element.U8_4(renderScript))
         
         // Setup QNN environment and load model
         setupQnnEnvironment()
@@ -410,16 +422,68 @@ class MainActivity : AppCompatActivity() {
             val depthMap = runDepthInference(bitmap)
             val inferenceTime = System.currentTimeMillis() - startTime
             
-            // Create depth visualization
-            val depthBitmap = createDepthVisualization(depthMap)
+            // Apply real bokeh blur based on depth
+            val bokehBitmap = applyRealTimeBokeh(bitmap, depthMap)
             
             runOnUiThread {
-                depthOverlay?.setImageBitmap(depthBitmap)
-                statusText?.text = "Depth: ${inferenceTime}ms (NNAPI)"
+                depthOverlay?.setImageBitmap(bokehBitmap)
+                statusText?.text = "Bokeh: ${inferenceTime}ms (NNAPI+GPU)"
             }
         } catch (e: Exception) {
             Log.e(TAG, "Frame depth processing failed", e)
         }
+    }
+    
+    private fun applyRealTimeBokeh(original: Bitmap, depthMap: FloatArray): Bitmap {
+        val rs = renderScript ?: return original
+        val blur = blurScript ?: return original
+        
+        // Create blurred version using RenderScript (GPU accelerated)
+        val blurredBitmap = original.copy(Bitmap.Config.ARGB_8888, true)
+        val inputAlloc = Allocation.createFromBitmap(rs, blurredBitmap)
+        val outputAlloc = Allocation.createFromBitmap(rs, blurredBitmap)
+        
+        // Max blur radius is 25
+        blur.setRadius(20f)
+        blur.setInput(inputAlloc)
+        blur.forEach(outputAlloc)
+        outputAlloc.copyTo(blurredBitmap)
+        
+        // Composite: keep sharp foreground, blur background based on depth
+        val result = original.copy(Bitmap.Config.ARGB_8888, true)
+        val width = original.width
+        val height = original.height
+        
+        // Normalize depth
+        val minDepth = depthMap.minOrNull() ?: 0f
+        val maxDepth = depthMap.maxOrNull() ?: 1f
+        val range = if (maxDepth - minDepth > 0) maxDepth - minDepth else 1f
+        
+        // Composite based on depth - foreground sharp, background blurred
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val dx = (x * MODEL_INPUT_SIZE / width).coerceIn(0, MODEL_INPUT_SIZE - 1)
+                val dy = (y * MODEL_INPUT_SIZE / height).coerceIn(0, MODEL_INPUT_SIZE - 1)
+                val depth = (depthMap[dy * MODEL_INPUT_SIZE + dx] - minDepth) / range
+                
+                // depth > 0.5 = foreground (sharp), depth < 0.5 = background (blur)
+                val origPixel = original.getPixel(x, y)
+                val blurPixel = blurredBitmap.getPixel(x, y)
+                
+                // Smooth blend based on depth
+                val blendFactor = (1f - depth).coerceIn(0f, 1f)
+                val r = ((Color.red(origPixel) * (1 - blendFactor) + Color.red(blurPixel) * blendFactor)).toInt()
+                val g = ((Color.green(origPixel) * (1 - blendFactor) + Color.green(blurPixel) * blendFactor)).toInt()
+                val b = ((Color.blue(origPixel) * (1 - blendFactor) + Color.blue(blurPixel) * blendFactor)).toInt()
+                
+                result.setPixel(x, y, Color.rgb(r, g, b))
+            }
+        }
+        
+        inputAlloc.destroy()
+        outputAlloc.destroy()
+        
+        return result
     }
     
     @androidx.camera.core.ExperimentalGetImage
@@ -486,6 +550,8 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         tfliteInterpreter?.close()
         nnApiDelegate?.close()
+        blurScript?.destroy()
+        renderScript?.destroy()
         cameraExecutor.shutdown()
     }
 }
