@@ -133,10 +133,57 @@ class MainActivity : AppCompatActivity() {
         setupQnnEnvironment()
         loadModel()
         
+        // Check Camera2 Extensions support
+        checkCameraExtensions()
+        
         if (allPermissionsGranted()) {
             startCamera()
         } else {
             ActivityCompat.requestPermissions(this, REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS)
+        }
+    }
+    
+    private fun checkCameraExtensions() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            try {
+                val cameraManager = getSystemService(CAMERA_SERVICE) as CameraManager
+                val cameraIds = cameraManager.cameraIdList
+                
+                val sb = StringBuilder("Camera Extensions:\n")
+                for (cameraId in cameraIds) {
+                    val chars = cameraManager.getCameraCharacteristics(cameraId)
+                    val facing = chars.get(CameraCharacteristics.LENS_FACING)
+                    val facingStr = if (facing == CameraCharacteristics.LENS_FACING_BACK) "Back" else "Front"
+                    
+                    val extChars = cameraManager.getCameraExtensionCharacteristics(cameraId)
+                    val extensions = extChars.supportedExtensions
+                    
+                    sb.append("Camera $cameraId ($facingStr): ")
+                    if (extensions.isEmpty()) {
+                        sb.append("No extensions\n")
+                    } else {
+                        val extNames = extensions.map { ext ->
+                            when (ext) {
+                                CameraExtensionCharacteristics.EXTENSION_AUTOMATIC -> "AUTO"
+                                CameraExtensionCharacteristics.EXTENSION_BOKEH -> "BOKEH"
+                                CameraExtensionCharacteristics.EXTENSION_FACE_RETOUCH -> "FACE"
+                                CameraExtensionCharacteristics.EXTENSION_HDR -> "HDR"
+                                CameraExtensionCharacteristics.EXTENSION_NIGHT -> "NIGHT"
+                                else -> "EXT_$ext"
+                            }
+                        }
+                        sb.append(extNames.joinToString(", ")).append("\n")
+                    }
+                }
+                Log.i(TAG, sb.toString())
+                runOnUiThread { 
+                    if (sb.contains("BOKEH")) {
+                        statusText?.text = "Hardware BOKEH available!"
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to check camera extensions", e)
+            }
         }
     }
     
