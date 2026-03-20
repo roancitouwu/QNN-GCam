@@ -24,8 +24,8 @@ import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import org.tensorflow.lite.Interpreter
+import org.tensorflow.lite.gpu.CompatibilityList
 import org.tensorflow.lite.gpu.GpuDelegate
-import org.tensorflow.lite.HexagonDelegate
 import org.tensorflow.lite.nnapi.NnApiDelegate
 import java.io.File
 import java.io.FileInputStream
@@ -56,7 +56,6 @@ class MainActivity : AppCompatActivity() {
     private var depthBlurEnabled = false
     private var statusText: TextView? = null
     private var nnApiDelegate: NnApiDelegate? = null
-    private var hexagonDelegate: HexagonDelegate? = null
     private var gpuDelegate: GpuDelegate? = null
     private var acceleratorType = "CPU"
     private var depthOverlay: ImageView? = null
@@ -209,55 +208,54 @@ class MainActivity : AppCompatActivity() {
             val modelBuffer = loadModelFile("midas.tflite")
             val options = Interpreter.Options()
             
-            // Try Hexagon DSP first (fastest for quantized models)
-            try {
-                hexagonDelegate = HexagonDelegate(this)
-                options.addDelegate(hexagonDelegate)
-                tfliteInterpreter = Interpreter(modelBuffer, options)
-                acceleratorType = "Hexagon DSP"
-                Log.i(TAG, "MiDaS loaded with Hexagon DSP")
-            } catch (e: Exception) {
-                Log.w(TAG, "Hexagon failed: ${e.message}")
-                hexagonDelegate?.close()
-                hexagonDelegate = null
-                
+            // Check GPU compatibility first
+            val compatList = CompatibilityList()
+            
+            if (compatList.isDelegateSupportedOnThisDevice) {
                 // Try GPU delegate
                 try {
-                    gpuDelegate = GpuDelegate()
+                    val gpuOptions = GpuDelegate.Options()
+                    gpuDelegate = GpuDelegate(gpuOptions)
                     options.addDelegate(gpuDelegate)
                     tfliteInterpreter = Interpreter(modelBuffer, options)
                     acceleratorType = "GPU"
                     Log.i(TAG, "MiDaS loaded with GPU")
-                } catch (e2: Exception) {
-                    Log.w(TAG, "GPU failed: ${e2.message}")
+                } catch (e: Exception) {
+                    Log.w(TAG, "GPU failed: ${e.message}")
                     gpuDelegate?.close()
                     gpuDelegate = null
-                    
-                    // Try NNAPI delegate
-                    try {
-                        nnApiDelegate = NnApiDelegate()
-                        options.addDelegate(nnApiDelegate)
-                        tfliteInterpreter = Interpreter(modelBuffer, options)
-                        acceleratorType = "NNAPI"
-                        Log.i(TAG, "MiDaS loaded with NNAPI")
-                    } catch (e3: Exception) {
-                        Log.w(TAG, "NNAPI failed: ${e3.message}")
-                        nnApiDelegate?.close()
-                        nnApiDelegate = null
-                        
-                        // Fallback to CPU with multiple threads
-                        options.setNumThreads(4)
-                        tfliteInterpreter = Interpreter(modelBuffer, options)
-                        acceleratorType = "CPU (4 threads)"
-                        Log.i(TAG, "MiDaS loaded with CPU")
-                    }
+                    tryNnapiOrCpu(modelBuffer, options)
                 }
+            } else {
+                Log.i(TAG, "GPU not supported on this device")
+                tryNnapiOrCpu(modelBuffer, options)
             }
             
             runOnUiThread { statusText?.text = "MiDaS ready ($acceleratorType)" }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load MiDaS model", e)
             runOnUiThread { statusText?.text = "Model load failed: ${e.message}" }
+        }
+    }
+    
+    private fun tryNnapiOrCpu(modelBuffer: MappedByteBuffer, options: Interpreter.Options) {
+        // Try NNAPI delegate
+        try {
+            nnApiDelegate = NnApiDelegate()
+            options.addDelegate(nnApiDelegate)
+            tfliteInterpreter = Interpreter(modelBuffer, options)
+            acceleratorType = "NNAPI"
+            Log.i(TAG, "MiDaS loaded with NNAPI")
+        } catch (e: Exception) {
+            Log.w(TAG, "NNAPI failed: ${e.message}")
+            nnApiDelegate?.close()
+            nnApiDelegate = null
+            
+            // Fallback to CPU with multiple threads
+            options.setNumThreads(4)
+            tfliteInterpreter = Interpreter(modelBuffer, options)
+            acceleratorType = "CPU (4 threads)"
+            Log.i(TAG, "MiDaS loaded with CPU")
         }
     }
     
@@ -636,7 +634,6 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         tfliteInterpreter?.close()
-        hexagonDelegate?.close()
         gpuDelegate?.close()
         nnApiDelegate?.close()
         blurScript?.destroy()
