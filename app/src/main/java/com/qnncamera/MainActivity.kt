@@ -3,8 +3,11 @@ package com.qnncamera
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.*
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CameraExtensionCharacteristics
+import android.os.Build
 import android.os.Bundle
-import android.os.Environment
 import android.util.Log
 import android.util.Size
 import android.view.Gravity
