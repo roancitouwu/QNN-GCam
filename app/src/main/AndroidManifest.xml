@@ -6,7 +6,7 @@
     <application
         android:extractNativeLibs="true"
         android:label="QNN Camera"
-        android:theme="@android:style/Theme.Material.NoActionBar">
+        android:theme="@style/Theme.AppCompat.NoActionBar">
         <uses-native-library android:name="libcdsprpc.so" android:required="false"/>
         <activity
             android:name=".MainActivity"
