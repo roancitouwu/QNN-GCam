@@ -17,7 +17,7 @@ import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import org.tensorflow.lite.Interpreter
-import org.tensorflow.lite.gpu.GpuDelegate
+import org.tensorflow.lite.nnapi.NnApiDelegate
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -45,7 +45,7 @@ class MainActivity : AppCompatActivity() {
     private var imageCapture: ImageCapture? = null
     private var depthBlurEnabled = false
     private var statusText: TextView? = null
-    private var gpuDelegate: GpuDelegate? = null
+    private var nnApiDelegate: NnApiDelegate? = null
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -126,21 +126,21 @@ class MainActivity : AppCompatActivity() {
         try {
             val modelBuffer = loadModelFile("midas.tflite")
             
-            // Try GPU delegate first, fall back to CPU
+            // Use NNAPI delegate for Hexagon DSP acceleration
             try {
-                gpuDelegate = GpuDelegate()
-                val options = Interpreter.Options().addDelegate(gpuDelegate)
+                nnApiDelegate = NnApiDelegate()
+                val options = Interpreter.Options().addDelegate(nnApiDelegate)
                 tfliteInterpreter = Interpreter(modelBuffer, options)
-                Log.i(TAG, "MiDaS model loaded with GPU delegate")
-                statusText?.text = "MiDaS ready (GPU)"
+                Log.i(TAG, "MiDaS model loaded with NNAPI (Hexagon DSP)")
+                runOnUiThread { statusText?.text = "MiDaS ready (NNAPI/DSP)" }
             } catch (e: Exception) {
-                Log.w(TAG, "GPU delegate failed, using CPU", e)
+                Log.w(TAG, "NNAPI delegate failed, using CPU", e)
                 tfliteInterpreter = Interpreter(modelBuffer)
-                statusText?.text = "MiDaS ready (CPU)"
+                runOnUiThread { statusText?.text = "MiDaS ready (CPU)" }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load MiDaS model", e)
-            statusText?.text = "Model load failed"
+            runOnUiThread { statusText?.text = "Model load failed: ${e.message}" }
         }
     }
     
@@ -334,7 +334,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         tfliteInterpreter?.close()
-        gpuDelegate?.close()
+        nnApiDelegate?.close()
         cameraExecutor.shutdown()
     }
 }
